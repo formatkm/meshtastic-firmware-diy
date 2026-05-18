@@ -14,7 +14,7 @@ extern "C" {
 #define ADC_ATTENUATION ADC_ATTEN_DB_12 // Voltage divider output is quite high
 #define ADC_CTRL 19
 #define ADC_CTRL_ENABLED HIGH
-#define LED_POWER 3
+#define LED_POWER 15
 
 #define USE_SSD1306
 // different screen

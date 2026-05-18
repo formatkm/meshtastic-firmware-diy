@@ -8,13 +8,13 @@ extern "C" {
 #endif // __cplusplus
 // Battery
 #define BATTERY_PIN 20
-#define ADC_MULTIPLIER 2.2
+#define ADC_MULTIPLIER 2.4
 #define BAT_MEASURE_ADC_UNIT 2
 #define ADC_CHANNEL ADC2_GPIO20_CHANNEL
 #define ADC_ATTENUATION ADC_ATTEN_DB_12 // Voltage divider output is quite high
 #define ADC_CTRL 19
 #define ADC_CTRL_ENABLED HIGH
-#define LED_POWER 15
+#define LED_POWER 3
 
 #define USE_SSD1306
 // different screen

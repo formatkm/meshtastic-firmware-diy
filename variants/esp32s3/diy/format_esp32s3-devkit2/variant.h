@@ -14,6 +14,7 @@ extern "C" {
 #define ADC_ATTENUATION ADC_ATTEN_DB_12 // Voltage divider output is quite high
 #define ADC_CTRL 19
 #define ADC_CTRL_ENABLED HIGH
+#define POWER_LED_HARDWARE_BLINKS_WHILE_CHARGING
 #define LED_POWER 3
 
 #define USE_SSD1306

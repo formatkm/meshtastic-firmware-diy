@@ -8,13 +8,13 @@ extern "C" {
 #endif // __cplusplus
 // Battery
 #define BATTERY_PIN 20
-#define ADC_MULTIPLIER 2.4
+#define ADC_MULTIPLIER 2.3
 #define BAT_MEASURE_ADC_UNIT 2
 #define ADC_CHANNEL ADC2_GPIO20_CHANNEL
 #define ADC_ATTENUATION ADC_ATTEN_DB_12 // Voltage divider output is quite high
 #define ADC_CTRL 19
 #define ADC_CTRL_ENABLED HIGH
-#define POWER_LED_HARDWARE_BLINKS_WHILE_CHARGING
+#define FORCE_BATTERY_ONLY  // 强制始终判断为电池供电
 #define LED_POWER 3
 
 #define USE_SSD1306

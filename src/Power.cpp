@@ -498,6 +498,8 @@ class AnalogBatteryLevel : public HasBatteryLevel
 // VBUS was not properly connected and detected by the CPU
 #elif defined(MUZI_BASE) || defined(PROMICRO_DIY_TCXO)
         return powerHAL_isVBUSConnected();
+#elif defined(FORCE_BATTERY_ONLY)  // 添加这个宏
+        return false;  // 强制始终返回 false
 #endif
         return getBattVoltage() > chargingVolt;
     }

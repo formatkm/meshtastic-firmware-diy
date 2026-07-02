@@ -1,4 +1,4 @@
-"""FastMCP server wiring — 43 tools across 9 categories (adds uhubctl power control).
+"""FastMCP server wiring - 43 tools across 9 categories (adds uhubctl power control).
 
 Each tool handler is a thin delegation to a named module (pio.py, admin.py,
 etc.). Business logic does not live here.
@@ -6,6 +6,7 @@ etc.). Business logic does not live here.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from mcp.server.fastmcp import FastMCP
@@ -14,15 +15,36 @@ from . import (
     admin,
     boards,
     devices,
+    fixtures,
     flash,
     hw_tools,
     info,
+    log_query,
     registry,
     serial_session,
 )
 from . import userprefs as userprefs_mod
+from .recorder import get_recorder
+
+log = logging.getLogger(__name__)
 
 app = FastMCP("meshtastic-mcp")
+
+
+def _start_recorder() -> None:
+    # Persistent device-log capture. Starts on first import - pubsub fan-out
+    # is process-global, so subscribing here captures every active interface
+    # (whether opened by an MCP tool, a pytest fixture, or a serial_session).
+    # Files land in mcp-server/.mtlog/ (gitignored). See recorder/recorder.py
+    # for the full design. Recorder startup is best-effort: an unwritable
+    # log dir or pubsub mismatch should not take the MCP server down.
+    try:
+        get_recorder().start()
+    except Exception as exc:
+        log.warning("Failed to start persistent recorder: %s", exc)
+
+
+_start_recorder()
 
 
 # ---------- Discovery & metadata ------------------------------------------
@@ -75,6 +97,7 @@ def build(
     env: str,
     with_manifest: bool = True,
     userprefs: dict[str, Any] | None = None,
+    build_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build firmware for one env via `pio run -e <env>`.
 
@@ -86,8 +109,21 @@ def build(
     build via userPrefs.jsonc injection. The file is restored after the build
     completes. Use `userprefs_manifest` to discover available keys. Use
     `userprefs_set` for persistent changes.
+
+    `build_flags` (optional): dict of `-D<NAME>=<VALUE>` macros for this build
+    only, injected via `PLATFORMIO_BUILD_FLAGS`. Common pattern:
+    `build_flags={"DEBUG_HEAP": 1}` enables per-thread leak detection + a
+    `[heap N]` prefix on every log line. The recorder picks the prefix up
+    automatically and synthesizes a high-resolution heap timeline that
+    `telemetry_timeline(field="free_heap")` can read alongside the normal
+    ~60 s LocalStats packets. Pair with `/leakhunt` for classification.
     """
-    return flash.build(env, with_manifest=with_manifest, userprefs_overrides=userprefs)
+    return flash.build(
+        env,
+        with_manifest=with_manifest,
+        userprefs_overrides=userprefs,
+        build_flags=build_flags,
+    )
 
 
 @app.tool()
@@ -105,6 +141,7 @@ def pio_flash(
     port: str,
     confirm: bool = False,
     userprefs: dict[str, Any] | None = None,
+    build_flags: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Flash firmware via `pio run -e <env> -t upload --upload-port <port>`.
 
@@ -114,8 +151,19 @@ def pio_flash(
 
     `userprefs` (optional): dict of `USERPREFS_<KEY>: value` baked into this
     build via userPrefs.jsonc injection; restored after upload.
+
+    `build_flags` (optional): dict of `-D<NAME>=<VALUE>` macros for the
+    rebuild-before-upload, e.g. `{"DEBUG_HEAP": 1}`. Required for the flags
+    to actually land in the uploaded firmware - without it, the implicit
+    rebuild relinks without the env var and silently drops them.
     """
-    return flash.flash(env, port, confirm=confirm, userprefs_overrides=userprefs)
+    return flash.flash(
+        env,
+        port,
+        confirm=confirm,
+        userprefs_overrides=userprefs,
+        build_flags=build_flags,
+    )
 
 
 @app.tool()
@@ -171,7 +219,7 @@ def userprefs_manifest() -> dict[str, Any]:
     """Full manifest of USERPREFS_* keys the firmware knows about.
 
     Combines `userPrefs.jsonc` (active + commented examples) with a scan of
-    `src/**` for `USERPREFS_<KEY>` references — so every key the firmware
+    `src/**` for `USERPREFS_<KEY>` references - so every key the firmware
     actually consumes shows up, even if undocumented in the jsonc.
 
     Each entry has: key, active (is it uncommented), value (current), example
@@ -220,7 +268,7 @@ def userprefs_reset() -> dict[str, Any]:
     """Restore userPrefs.jsonc from the most recent MCP backup (if any).
 
     The backup is only created by the legacy `userprefs_set` workflow (not
-    currently written automatically). Returns `{restored: bool, ...}` — false
+    currently written automatically). Returns `{restored: bool, ...}` - false
     when no backup is present, in which case the caller should edit the
     jsonc directly.
     """
@@ -245,7 +293,7 @@ def userprefs_testing_profile(
       - Run on a deterministic non-default LoRa slot (default 88 on US LONG_FAST,
         well off the `hash("LongFast")` slot a stock production device uses)
       - Join a private channel with a name and PSK that differ from public
-        defaults — so no accidental mesh-with-production-devices
+        defaults - so no accidental mesh-with-production-devices
       - Have MQTT disabled (no uplink/downlink bridge), so test traffic never
         leaks to a public broker
       - Optionally disable GPS for bench-test conditions
@@ -266,8 +314,8 @@ def userprefs_testing_profile(
             (fine one-off, useless for multi-device clusters).
         channel_name: primary channel name (≤11 chars). Default "McpTest".
         channel_num: 1-indexed LoRa slot (0 = fall back to name-hash). Default
-            88 — mid-upper US band, unlikely to collide with production slots.
-        region: short code — one of US, EU_433, EU_868, CN, JP, ANZ, KR, TW,
+            88 - mid-upper US band, unlikely to collide with production slots.
+        region: short code - one of US, EU_433, EU_868, CN, JP, ANZ, KR, TW,
             RU, IN, NZ_865, TH, UA_433, UA_868, MY_433, MY_919, SG_923, LORA_24.
         modem_preset: one of LONG_FAST, LONG_SLOW, LONG_MODERATE, VERY_LONG_SLOW,
             MEDIUM_SLOW, MEDIUM_FAST, SHORT_SLOW, SHORT_FAST, SHORT_TURBO.
@@ -297,7 +345,7 @@ def touch_1200bps(port: str, settle_ms: int = 250) -> dict[str, Any]:
 
     After the touch, polls serial devices for up to 3 seconds and reports any
     new port that appeared (the bootloader often enumerates as a different
-    device). Not destructive — this is just a reset signal.
+    device). Not destructive - this is just a reset signal.
     """
     return flash.touch_1200bps(port, settle_ms=settle_ms)
 
@@ -315,7 +363,7 @@ def serial_open(
     """Open a `pio device monitor` session reading from `port`.
 
     If `env` is set, pio picks up monitor_speed and monitor_filters from
-    platformio.ini — recommended for firmware debugging since it enables
+    platformio.ini - recommended for firmware debugging since it enables
     esp32_exception_decoder / esp32_c3_exception_decoder for ESP32 envs.
 
     Without `env`, uses the supplied baud and filters (default ["direct"]).
@@ -350,7 +398,7 @@ def serial_read(
     or `since_cursor=0` to read from the start of the in-memory buffer.
 
     Returns `dropped` = count of lines that aged out of the 10k-line ring
-    buffer between reads — so a value > 0 means you missed data.
+    buffer between reads - so a value > 0 means you missed data.
     """
     session = registry.get_session(session_id)
     return serial_session.read_session(
@@ -454,13 +502,13 @@ def set_debug_log_api(enabled: bool, port: str | None = None) -> dict[str, Any]:
     When true, firmware streams log lines as protobuf `LogRecord` messages
     over the StreamAPI (topic `meshtastic.log.line` in meshtastic-python)
     instead of raw text. Lets diagnostic clients capture firmware-side logs
-    through the SAME SerialInterface used for admin/info calls — no
+    through the SAME SerialInterface used for admin/info calls - no
     separate `pio device monitor` session needed, no exclusive-port-lock
     conflict. Persists across reboot via NVS; wiped by factory_reset
     unless re-applied.
 
     The earlier emitLogRecord race (shared tx buffer) is fixed at the
-    firmware level — the log path has a dedicated scratch + txBuf and
+    firmware level - the log path has a dedicated scratch + txBuf and
     both emission paths serialize via a mutex. Safe to leave on under
     traffic.
     """
@@ -577,7 +625,7 @@ def capture_screen(role: str | None = None, ocr: bool = True) -> dict[str, Any]:
 def uhubctl_list() -> list[dict[str, Any]]:
     """List every USB hub + per-port device attachment as seen by `uhubctl`.
 
-    Read-only — no confirm required. Each hub entry includes its location
+    Read-only - no confirm required. Each hub entry includes its location
     (`1-1.3`), descriptor, whether it supports Per-Port Power Switching,
     and a list of populated ports with VID:PID of attached devices.
     Useful for pre-flight checks before a destructive power-cycle call.
@@ -597,12 +645,12 @@ def uhubctl_power(
 ) -> dict[str, Any]:
     """Power a USB hub port on or off via `uhubctl -a on|off`.
 
-    Target the port by either (`location`, `port`) — raw uhubctl syntax,
-    e.g. `location="1-1.3", port=2` — OR by `role` ("nrf52", "esp32s3").
+    Target the port by either (`location`, `port`) - raw uhubctl syntax,
+    e.g. `location="1-1.3", port=2` - OR by `role` ("nrf52", "esp32s3").
     Role lookup honors `MESHTASTIC_UHUBCTL_LOCATION_<ROLE>` +
     `_PORT_<ROLE>` env vars first, falls back to VID auto-detection.
 
-    `action="off"` requires `confirm=True` (destructive — the attached
+    `action="off"` requires `confirm=True` (destructive - the attached
     device will immediately disappear from the OS).
     """
     from . import uhubctl as uhubctl_mod
@@ -630,7 +678,7 @@ def uhubctl_cycle(
 ) -> dict[str, Any]:
     """Power a USB hub port off, wait `delay_s` seconds, then on.
 
-    The typical hard-reset sequence — shorter than off+on as two RPCs
+    The typical hard-reset sequence - shorter than off+on as two RPCs
     because uhubctl handles the timing in-process. Target by (location,
     port) or by role (see `uhubctl_power`). Requires `confirm=True`.
     """
@@ -666,7 +714,7 @@ def _resolve_uhubctl_target(
 def esptool_chip_info(port: str) -> dict[str, Any]:
     """Run `esptool flash_id` and return chip, MAC, crystal, and flash size.
 
-    Read-only — no confirm required. Prefer this over parsing pio upload logs
+    Read-only - no confirm required. Prefer this over parsing pio upload logs
     when you just want to identify the chip.
     """
     return hw_tools.esptool_chip_info(port)
@@ -690,7 +738,7 @@ def esptool_raw(
     erase_flash, erase_region, merge_bin) require confirm=True.
 
     Prefer the high-level `pio_flash` / `erase_and_flash` / `update_flash`
-    tools where possible — they know board-specific offsets and protocols.
+    tools where possible - they know board-specific offsets and protocols.
     """
     return hw_tools.esptool_raw(args, port=port, confirm=confirm)
 
@@ -699,7 +747,7 @@ def esptool_raw(
 def nrfutil_dfu(port: str, package_path: str, confirm: bool = False) -> dict[str, Any]:
     """DFU-flash a .zip package to an nRF52840 via `nrfutil dfu serial`.
 
-    Prefer `pio_flash` for flashing firmware built from this repo — pio handles
+    Prefer `pio_flash` for flashing firmware built from this repo - pio handles
     the DFU invocation automatically. Use this tool when flashing a pre-built
     release zip or a custom bootloader. Requires confirm=True.
     """
@@ -734,3 +782,227 @@ def picotool_load(uf2_path: str, confirm: bool = False) -> dict[str, Any]:
 def picotool_raw(args: list[str], confirm: bool = False) -> dict[str, Any]:
     """Pass-through to `picotool`. load/reboot/save/erase require confirm=True."""
     return hw_tools.picotool_raw(args, confirm=confirm)
+
+
+# ---------- Persistent device-log capture (recorder) ----------------------
+#
+# The recorder is autouse - it starts at server import and continuously
+# writes every meshtastic pubsub event to JSONL files under .mtlog/. These
+# tools are query-only over those files, plus a few lifecycle controls.
+
+
+@app.tool()
+def logs_window(
+    start: str = "-15m",
+    end: str = "now",
+    grep: str | None = None,
+    level: str | None = None,
+    tag: str | None = None,
+    port: str | None = None,
+    max_lines: int = 200,
+) -> dict[str, Any]:
+    """Recent firmware log lines from the persistent recorder.
+
+    Filters by time window, regex over the line, level (single or
+    pipe-separated set like "WARN|ERROR|CRIT"), thread-name tag, and
+    interface port. Returns up to max_lines most-recent matches.
+
+    Time strings: "-15m", "-2h", "-3d", "now", or ISO 8601.
+
+    Note: lines arriving via the LogRecord protobuf path (when
+    set_debug_log_api(True) is on) come without level prefix - the
+    meshtastic Python lib drops record.level before fan-out. For those,
+    `level` filter won't match; use `grep` instead.
+    """
+    return log_query.logs_window(
+        start=start,
+        end=end,
+        grep=grep,
+        level=level,
+        tag=tag,
+        port=port,
+        max_lines=max_lines,
+    )
+
+
+@app.tool()
+def telemetry_timeline(
+    window: str = "1h",
+    variant: str = "local",
+    field: str = "free_heap",
+    port: str | None = None,
+    max_points: int = 200,
+) -> dict[str, Any]:
+    """Time series of one telemetry field, downsampled to <= max_points.
+
+    `variant` ∈ device, local, environment, power, airQuality, health, host.
+    `field` accepts snake_case or camelCase; common aliases (free_heap ↔
+    heap_free_bytes) are normalized.
+
+    Returns slope_per_min (linear-regression slope, units/minute) so a
+    leak detector can read one number - negative slope on free_heap over
+    a long window indicates a real leak.
+
+    LocalStats variant ("local") cadence is ~60 s (whatever the device's
+    `device_update_interval` is set to), so a 1 h window gives ~60 raw
+    points. Bucket-mean downsampling preserves shape.
+    """
+    return log_query.telemetry_timeline(
+        window=window,
+        variant=variant,
+        field=field,
+        port=port,
+        max_points=max_points,
+    )
+
+
+@app.tool()
+def packets_window(
+    start: str = "-5m",
+    end: str = "now",
+    portnum: str | None = None,
+    from_node: str | None = None,
+    to_node: str | None = None,
+    max: int = 200,
+) -> dict[str, Any]:
+    """Recent mesh packets recorded by the recorder.
+
+    Each row is a summary (portnum, from/to, hop_limit, RSSI/SNR, payload
+    size + first 64 bytes hex) - full payload bytes are not stored.
+    `portnum` accepts a pipe-separated set like "TEXT_MESSAGE_APP|POSITION_APP".
+    """
+    return log_query.packets_window(
+        start=start,
+        end=end,
+        portnum=portnum,
+        from_node=from_node,
+        to_node=to_node,
+        max=max,
+    )
+
+
+@app.tool()
+def events_window(
+    start: str = "-1h",
+    end: str = "now",
+    kind: str | None = None,
+    max: int = 200,
+) -> dict[str, Any]:
+    """Return recorder events: connection lifecycle, node updates, and `mark_event` markers.
+
+    `kind` ∈ recorder_start, recorder_pause, recorder_resume,
+    connection_established, connection_lost, node_updated, mark.
+    Pipe-separated sets ("connection_lost|connection_established") work.
+    """
+    return log_query.events_window(start=start, end=end, kind=kind, max=max)
+
+
+@app.tool()
+def mark_event(
+    label: str,
+    note: str | None = None,
+    data: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Drop a named marker into events.jsonl AND logs.jsonl.
+
+    Useful for aligning a timeline around a known stimulus: call before
+    and after a stress workload, then query telemetry_timeline /
+    logs_window with the markers' timestamps as bounds.
+
+    The marker also lands in logs.jsonl with level=MARK so a single
+    grep over logs picks it up.
+    """
+    return get_recorder().mark_event(label=label, note=note, data=data)
+
+
+@app.tool()
+def recorder_status() -> dict[str, Any]:
+    """Return recorder runtime info: running, paused, file sizes, last_ts per stream.
+
+    Use this to sanity-check that capture is working before you trust a
+    `logs_window` / `telemetry_timeline` result.
+    """
+    return get_recorder().status()
+
+
+@app.tool()
+def recorder_pause(reason: str | None = None) -> dict[str, Any]:
+    """Pause writes to all four streams. Pubsub subscriptions stay active -
+    we just drop events on the floor while paused. Resume with `recorder_resume`.
+
+    Use when capturing a known-good baseline that you don't want to
+    pollute with pre-test noise. Default state is recording; this is
+    rarely needed.
+    """
+    get_recorder().pause(reason=reason)
+    return {"ok": True, "paused": True, "reason": reason}
+
+
+@app.tool()
+def recorder_resume() -> dict[str, Any]:
+    """Resume writes after `recorder_pause`. No-op if already running."""
+    get_recorder().resume()
+    return {"ok": True, "paused": False}
+
+
+@app.tool()
+def recorder_export(
+    start: str,
+    end: str,
+    dest_dir: str,
+    streams: list[str] | None = None,
+) -> dict[str, Any]:
+    """Bundle a slice of the recorder's streams into `dest_dir`.
+
+    Writes one uncompressed JSONL per requested stream (logs / telemetry /
+    packets / events). Useful for: attaching to a bug report, feeding a
+    notebook, or backfilling Datadog after the fact.
+    """
+    return log_query.export(
+        start=start,
+        end=end,
+        dest_dir=dest_dir,
+        streams=streams,
+    )
+
+
+# ---------- Fixture / test-data push --------------------------------------
+
+
+@app.tool()
+def push_fake_nodedb(
+    size: int,
+    target: str = "portduino",
+    port: str | None = None,
+    portduino_config: str = "default",
+    backup_existing: bool = True,
+    confirm: bool = False,
+    reboot_after: bool = True,
+    custom_seed_jsonl: str | None = None,
+) -> dict[str, Any]:
+    """Push a fake-NodeDB v25 fixture (250/500/1000/2000 nodes) onto a device.
+
+    Two transports:
+      target="portduino" - file copy to ~/.portduino/<portduino_config>/prefs/nodes.proto.
+                            Fast, no device connection needed.
+      target="hardware"  - XModem upload over serial/BLE to /prefs/nodes.proto.
+                            Requires `port` + `confirm=True`. Triggers a reboot
+                            so loadFromDisk picks up the new file at next boot.
+
+    Compiles a fresh-timestamp proto from the committed JSONL seed under
+    test/fixtures/nodedb/seed_v25_<N>.jsonl each invocation, so the loaded
+    NodeDB always looks "recent" to the connecting phone. Structural data
+    (names, IDs, positions, telemetries) is deterministic per the seed.
+
+    Override the JSONL via `custom_seed_jsonl` to push a hand-edited scenario.
+    """
+    return fixtures.push_fake_nodedb(
+        size=size,
+        target=target,  # type: ignore[arg-type]
+        port=port,
+        portduino_config=portduino_config,
+        backup_existing=backup_existing,
+        confirm=confirm,
+        reboot_after=reboot_after,
+        custom_seed_jsonl=custom_seed_jsonl,
+    )
